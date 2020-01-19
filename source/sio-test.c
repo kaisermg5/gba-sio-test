@@ -1,4 +1,11 @@
 
+// Uncomment to print console to the game instead of  
+//#define F_GRAPHICAL_CONSOLE
+
+
+// Uncomment for callback system
+//#define USE_CALLBACK_SYSTEM
+
 #include <gba_video.h>
 #include <gba_interrupt.h>
 #include <gba_systemcalls.h>
@@ -6,13 +13,16 @@
 #include <gba_sio.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#ifdef F_GRAPHICAL_CONSOLE
+#include <gba_console.h>
+#define mgba_puts(x) puts(x)
+#define mgba_printf(par1, par2, par3) printf(par2, (unsigned int) (par3))
+#else
 #include "mgba.h"
-
-
 static inline void mgba_puts(const char * string) {
 	mgba_printf(MGBA_LOG_DEBUG, string);
 }
+#endif
 
 
 typedef void (*CALLBACK_FUNC)(void);
@@ -91,6 +101,57 @@ void InitializeSlave(void) {
 	irqEnable(IRQ_SERIAL);
 }
 
+// All in one
+void allInOneSIO(bool isMaster) {
+	if (REG_SIOCNT & (1<<7)) {
+		mgba_puts("error: already started");
+		return;
+	}
+	// 0?
+	REG_SIOCNT &= ~(1<<13);
+	// 1
+	REG_RCNT &= ~(1<<15);
+	// 2
+	REG_SIOCNT &= ~(1<<5);
+	REG_SIOCNT |= (1<<4);
+	// 3
+	REG_SIODATA32 = isMaster ? 0x1234 : 0x9876;
+	// 4
+	REG_SIOCNT |= (1<<3);
+
+	s32 timer = 0;
+	if (isMaster) {
+		// m1
+		REG_SIOCNT |= 1;
+		REG_SIOCNT &= ~(1<<1);
+		// m2
+		mgba_puts("wait for slave");
+		while (REG_SIOCNT & (1<<2)) {
+			timer++;
+		}
+		mgba_puts("slave ready");
+		// m3
+		REG_SIOCNT |= (1<<7);
+	} else {
+		// s1
+		REG_SIOCNT &= ~1;
+		// s2
+		REG_SIOCNT &= ~(1<<3);
+		// m3
+		REG_SIOCNT |= (1<<7);
+	}
+
+	mgba_puts("wait...");
+	while (REG_SIOCNT & (1<<7)) {
+		timer++;
+	}
+	mgba_puts("done?");
+	mgba_printf(MGBA_LOG_DEBUG, "val: 0x%x\n", (s32)REG_SIODATA32);
+	mgba_printf(MGBA_LOG_DEBUG, "timer: 0x%x\n", timer);
+}
+
+
+
 // Delay between calls to SIO func callbacks
 const u16 FRAME_DELAY = 0;//60;
 
@@ -103,7 +164,13 @@ int main(void) {
 	// is required
 	irqInit();
 	irqEnable(IRQ_VBLANK);
+
+#ifdef F_GRAPHICAL_CONSOLE
+	consoleDemoInit();
+#else
 	mgba_console_open();
+#endif
+	
 	u16 currKeys;
 	bool initializeFlag = true;
 	u16 i = 0;
@@ -118,11 +185,20 @@ int main(void) {
 		if (initializeFlag) {
 			if (currKeys & KEY_A) {
 				mgba_puts("master");
-				sioCallback = InitializeMaster;
+				#ifdef USE_CALLBACK_SYSTEM
+					sioCallback = InitializeMaster;
+				#else
+					allInOneSIO(true);
+				#endif
+				
 				initializeFlag = false;
 			} else if (currKeys & KEY_B) {
 				mgba_puts("slave");
-				sioCallback = InitializeSlave;
+				#ifdef USE_CALLBACK_SYSTEM
+					sioCallback = InitializeSlave;
+				#else
+					allInOneSIO(false);
+				#endif
 				initializeFlag = false;
 			}
 		}
